@@ -15,15 +15,15 @@
 -module(ranch_acceptors_sup).
 -behaviour(supervisor).
 
--export([start_link/4]).
+-export([start_link/5]).
 -export([init/1]).
 
--spec start_link(ranch:ref(), non_neg_integer(), module(), any())
+-spec start_link(ranch:ref(), non_neg_integer(), module(), any(), any())
 	-> {ok, pid()}.
-start_link(Ref, NbAcceptors, Transport, TransOpts) ->
-	supervisor:start_link(?MODULE, [Ref, NbAcceptors, Transport, TransOpts]).
+start_link(Ref, NbAcceptors, Transport, TransOpts, Protocol) ->
+	supervisor:start_link(?MODULE, [Ref, NbAcceptors, Transport, TransOpts, Protocol]).
 
-init([Ref, NbAcceptors, Transport, TransOpts]) ->
+init([Ref, NbAcceptors, Transport, TransOpts, Protocol]) ->
 	ConnsSup = ranch_server:get_connections_sup(Ref),
 	LSocket = case proplists:get_value(socket, TransOpts) of
 		undefined ->
@@ -43,7 +43,7 @@ init([Ref, NbAcceptors, Transport, TransOpts]) ->
 	ranch_server:set_addr(Ref, Addr),
 	Procs = [
 		{{acceptor, self(), N}, {ranch_acceptor, start_link, [
-			LSocket, Transport, ConnsSup
+			Ref, LSocket, Transport, TransOpts, ConnsSup, Protocol
 		]}, permanent, brutal_kill, worker, []}
 			|| N <- lists:seq(1, NbAcceptors)],
 	{ok, {{one_for_one, 10, 10}, Procs}}.

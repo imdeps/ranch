@@ -98,6 +98,7 @@ active_connections(SupPid) ->
 	module(), timeout(), module()) -> no_return().
 init(Parent, Ref, ConnType, Shutdown, Transport, AckTimeout, Protocol) ->
 	process_flag(trap_exit, true),
+	process_flag(priority, high),
 	ok = ranch_server:set_connections_sup(Ref, self()),
 	MaxConns = ranch_server:get_max_connections(Ref),
 	Opts = ranch_server:get_protocol_options(Ref),

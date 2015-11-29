@@ -14,26 +14,51 @@
 
 -module(ranch_acceptor).
 
--export([start_link/3]).
--export([loop/3]).
+-export([start_link/6]).
+-export([loop/9]).
 
--spec start_link(inet:socket(), module(), pid())
+-spec start_link(any(), inet:socket(), module(), pid(), any(), any())
 	-> {ok, pid()}.
-start_link(LSocket, Transport, ConnsSup) ->
-	Pid = spawn_link(?MODULE, loop, [LSocket, Transport, ConnsSup]),
+start_link(Ref, LSocket, Transport, TransOpts, ConnsSup, Protocol) ->
+	MaxConn = ranch_server:get_max_connections(Ref),
+	ProtoOpts = ranch_server:get_protocol_options(Ref),
+    AckTimeout = proplists:get_value(ack_timeout, TransOpts, 5000),
+
+	Pid = spawn_link(?MODULE, loop, [Ref, LSocket, Transport, TransOpts,
+				ConnsSup, AckTimeout, MaxConn, Protocol, ProtoOpts]),
 	{ok, Pid}.
 
--spec loop(inet:socket(), module(), pid()) -> no_return().
-loop(LSocket, Transport, ConnsSup) ->
+loop(Ref, LSocket, Transport, TransOpts, ConnsSup,
+	AckTimeout, MaxConn, Protocol, ProtoOpts) ->
+    process_flag(priority, high),
+	process_flag(trap_exit, true),
 	_ = case Transport:accept(LSocket, infinity) of
 		{ok, CSocket} ->
-			case Transport:controlling_process(CSocket, ConnsSup) of
-				ok ->
-					%% This call will not return until process has been started
-					%% AND we are below the maximum number of connections.
-					ranch_conns_sup:start_protocol(ConnsSup, CSocket);
-				{error, _} ->
-					Transport:close(CSocket)
+			% ranch_conns_sup 单线程且占内存, infinity时不使用supervisor启动连接
+			case MaxConn == infinity of
+				true ->
+					catch case Protocol:start_link(Ref, CSocket, Transport, ProtoOpts) of
+						{ok, Pid} ->
+							case Transport:controlling_process(CSocket, Pid) of
+								ok ->
+									Pid ! {shoot, Ref, Transport, CSocket, AckTimeout};
+								Error ->
+									Transport:close(CSocket),
+									error_logger:error_msg("~p ~p", [Protocol, Error])
+							end;
+						Error ->
+							error_logger:error_msg("~p ~p", [Protocol, Error])
+					end;
+				false ->
+					case Transport:controlling_process(CSocket, ConnsSup) of
+						ok ->
+							%% This call will not return until process has been started
+							%% AND we are below the maximum number of connections.
+
+							ranch_conns_sup:start_protocol(ConnsSup, CSocket);
+						{error, _} ->
+							Transport:close(CSocket)
+					end
 			end;
 		%% Reduce the accept rate if we run out of file descriptors.
 		%% We can't accept anymore anyway, so we might as well wait
@@ -45,7 +70,8 @@ loop(LSocket, Transport, ConnsSup) ->
 			ok
 	end,
 	flush(),
-	?MODULE:loop(LSocket, Transport, ConnsSup).
+	?MODULE:loop(Ref, LSocket, Transport, TransOpts, ConnsSup,
+		AckTimeout, MaxConn, Protocol, ProtoOpts).
 
 flush() ->
 	receive Msg ->
